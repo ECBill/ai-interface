@@ -9,14 +9,47 @@ function App() {
   const [stream, setStream] = useState(true)
   const [running, setRunning] = useState(false)
 
-  const sendRequest = () => {
+  const sendRequest = async () => {
     if (!message.trim()) return
     setRunning(true)
-    setResponse('正在等待接口响应...')
-    window.setTimeout(() => {
-      setResponse('这里将显示模型返回的文本。请先在供应商设置中配置 API Key。')
+    setResponse('正在连接接口...')
+    try {
+      const endpoint = stream ? '/api/v1/invocations/stream' : '/api/v1/invocations'
+      const result = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerId: provider, model, messages: [{ role: 'user', content: message }], stream }),
+      })
+      if (!result.ok || !result.body) throw new Error((await result.text()) || `请求失败 (${result.status})`)
+      if (!stream) {
+        const body = await result.json()
+        setResponse(body.outputText || '接口返回为空')
+        return
+      }
+      const reader = result.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let output = ''
+      while (true) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        buffer += decoder.decode(chunk.value, { stream: true })
+        const events = buffer.split('\n\n')
+        buffer = events.pop() || ''
+        for (const event of events) {
+          const data = event.split('\n').find((line) => line.startsWith('data: '))?.slice(6)
+          if (!data) continue
+          const parsed = JSON.parse(data) as { type: string; text?: string; message?: string }
+          if (parsed.type === 'delta') { output += parsed.text || ''; setResponse(output) }
+          if (parsed.type === 'error') throw new Error(parsed.message || '流式请求失败')
+        }
+      }
+    } catch (error) {
+      setResponse(error instanceof Error ? error.message : '请求失败')
+    } finally {
       setRunning(false)
-    }, 500)
+    }
   }
 
   return (
