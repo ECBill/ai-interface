@@ -1,8 +1,10 @@
 import time
+import json
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.api.auth import current_user
@@ -16,6 +18,10 @@ from app.providers.openai import build_payload as build_openai, extract_text as 
 from app.schemas.invocation import InvocationRequest
 
 router = APIRouter(prefix="/invocations", tags=["invocations"])
+
+
+def sse(event_type: str, payload: dict[str, Any]) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 @router.post("")
@@ -54,3 +60,43 @@ async def invoke(request: InvocationRequest, user: User = Depends(current_user),
         invocation.error_code = "PROVIDER_UNAVAILABLE"
         db.commit()
         raise HTTPException(status_code=502, detail="PROVIDER_UNAVAILABLE") from exc
+
+
+@router.post("/stream")
+async def stream(request: InvocationRequest, user: User = Depends(current_user), db: Session = Depends(get_db)) -> StreamingResponse:
+    if not request.stream:
+        request = request.model_copy(update={"stream": True})
+    credential = credential_or_none(request.providerId, user.id, db)
+    if not credential:
+        raise HTTPException(status_code=409, detail="PROVIDER_NOT_CONFIGURED")
+    api_key = decrypt_secret(credential.encrypted_api_key)
+    headers = {"Authorization": f"Bearer {api_key}"} if request.providerId == "openai" else {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+    payload = build_openai(request) if request.providerId == "openai" else build_anthropic(request)
+    endpoint = f"{credential.base_url}/responses" if request.providerId == "openai" else f"{credential.base_url}/v1/messages"
+
+    async def events() -> Any:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=10)) as client:
+            try:
+                async with client.stream("POST", endpoint, headers=headers, json=payload) as upstream:
+                    upstream.raise_for_status()
+                    async for line in upstream.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        raw = line[6:]
+                        if raw == "[DONE]":
+                            yield sse("done", {"type": "done"})
+                            continue
+                        try:
+                            body = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        if request.providerId == "openai" and body.get("type") == "response.output_text.delta":
+                            yield sse("delta", {"type": "delta", "text": body.get("delta", "")})
+                        elif request.providerId == "anthropic" and body.get("type") == "content_block_delta" and body.get("delta", {}).get("type") == "text_delta":
+                            yield sse("delta", {"type": "delta", "text": body["delta"].get("text", "")})
+                        elif body.get("type") in {"response.completed", "message_stop"}:
+                            yield sse("done", {"type": "done"})
+            except httpx.HTTPError:
+                yield sse("error", {"type": "error", "code": "PROVIDER_UNAVAILABLE", "message": "供应商连接失败"})
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
