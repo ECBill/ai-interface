@@ -1,17 +1,19 @@
 import json
+import time
 from datetime import datetime
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.auth import current_user
 from app.core.database import get_db
-from app.core.secrets import encrypt_secret, fingerprint
+from app.core.secrets import decrypt_secret, encrypt_secret, fingerprint
 from app.models.auth import User
 from app.models.provider import ProviderCredential
-from app.schemas.provider import CredentialRequest, ProviderStatus
+from app.schemas.provider import CredentialRequest, ProviderStatus, ValidationRequest, ValidationResult
 
 router = APIRouter(prefix="/providers", tags=["providers"])
 SUPPORTED = {"openai", "anthropic"}
@@ -54,6 +56,33 @@ def save_credentials(provider_id: str, payload: CredentialRequest, user: User = 
         db.add(credential)
     db.commit()
     return ProviderStatus(id=provider_id, configured=True, keyFingerprint=credential.key_fingerprint, baseUrl=credential.base_url, models=json.loads(credential.model_ids))
+
+
+@router.post("/{provider_id}/validate", response_model=ValidationResult)
+def validate_provider(provider_id: str, payload: ValidationRequest, user: User = Depends(current_user), db: Session = Depends(get_db)) -> ValidationResult:
+    credential = credential_or_none(provider_id, user.id, db)
+    if not credential:
+        raise HTTPException(status_code=409, detail="PROVIDER_NOT_CONFIGURED")
+    models = json.loads(credential.model_ids)
+    model = payload.model or (models[0] if models else None)
+    if not model:
+        raise HTTPException(status_code=422, detail="请先配置至少一个模型")
+    api_key = decrypt_secret(credential.encrypted_api_key).strip()
+    headers = {"Authorization": f"Bearer {api_key}"} if provider_id != "anthropic" else {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+    endpoint = f"{credential.base_url}/v1/messages" if provider_id == "anthropic" else (f"{credential.base_url}/responses" if provider_id == "openai" else f"{credential.base_url}/chat/completions")
+    request_body = {"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1, "stream": False} if provider_id.startswith("custom-") else {"model": model, "input": [{"role": "user", "content": "ping"}], "max_output_tokens": 1, "stream": False}
+    started = time.perf_counter()
+    try:
+        with httpx.Client(timeout=httpx.Timeout(15, connect=5), trust_env=False) as client:
+            response = client.post(endpoint, headers=headers, json=request_body)
+        response.raise_for_status()
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="PROVIDER_TIMEOUT") from exc
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"供应商返回 HTTP {exc.response.status_code}: {exc.response.text[:300]}") from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"供应商连接失败: {exc}") from exc
+    return ValidationResult(providerId=provider_id, valid=True, latencyMs=int((time.perf_counter() - started) * 1000), message="连接验证成功", model=model)
 
 
 @router.delete("/{provider_id}/credentials", status_code=status.HTTP_204_NO_CONTENT)

@@ -14,3 +14,15 @@ class ProviderStatus(BaseModel):
     keyFingerprint: Optional[str] = None
     baseUrl: Optional[str] = None
     models: List[str] = Field(default_factory=list)
+
+
+class ValidationRequest(BaseModel):
+    model: Optional[str] = Field(default=None, min_length=1, max_length=128)
+
+
+class ValidationResult(BaseModel):
+    providerId: str
+    valid: bool
+    latencyMs: int
+    message: str
+    model: Optional[str] = None

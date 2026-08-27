@@ -22,6 +22,7 @@ function App() {
   const [apiKey, setApiKey] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [models, setModels] = useState('')
+  const [validation, setValidation] = useState('')
   const [history, setHistory] = useState<Array<{ id: number; providerId: string; model: string; status: string; latencyMs?: number }>>([])
 
   const api = async (path: string, options?: RequestInit) => {
@@ -39,7 +40,10 @@ function App() {
 
   const openSettings = () => { if (!user) { setDialog('login'); return }; loadProviders(); setDialog('settings') }
   const saveProvider = async () => {
-    try { await api(`/api/v1/providers/${settingsProvider}/credentials`, { method: 'PUT', body: JSON.stringify({ apiKey, baseUrl: baseUrl || null, models: models.split(',').map((item) => item.trim()).filter(Boolean) }) }); await loadProviders(); setApiKey(''); alert('供应商配置已保存') } catch (error) { alert(error instanceof Error ? error.message : '保存失败') }
+    try { await api(`/api/v1/providers/${settingsProvider}/credentials`, { method: 'PUT', body: JSON.stringify({ apiKey, baseUrl: baseUrl || null, models: models.split(',').map((item) => item.trim()).filter(Boolean) }) }); await loadProviders(); setApiKey(''); setValidation('供应商配置已保存') } catch (error) { setValidation(error instanceof Error ? error.message : '保存失败') }
+  }
+  const validateProvider = async () => {
+    try { const result = await api(`/api/v1/providers/${settingsProvider}/validate`, { method: 'POST', body: JSON.stringify({ model: models.split(',').map((item) => item.trim()).filter(Boolean)[0] }) }); setValidation(`${result.message} · ${result.model} · ${result.latencyMs}ms`) } catch (error) { setValidation(error instanceof Error ? error.message : '验证失败') }
   }
   const openHistory = async () => { if (!user) { setDialog('login'); return }; try { const data = await api('/api/v1/invocations'); setHistory(data.items); setDialog('history') } catch { setDialog('login') } }
 
@@ -114,7 +118,7 @@ function App() {
       <footer><span>OPENAI / ANTHROPIC READY</span><span>DESIGN v0.2 · 2026</span></footer>
       {dialog && <div className="modal-backdrop" onClick={() => setDialog(null)}><section className="modal" onClick={(event) => event.stopPropagation()}>
         {dialog === 'login' && <><span className="label">ACCOUNT ACCESS</span><h2>登录工作台</h2><input placeholder="邮箱" value={email} onChange={(event) => setEmail(event.target.value)} /><input type="password" placeholder="密码（至少 12 位，含字母和数字）" value={password} onChange={(event) => setPassword(event.target.value)} /><p className="error">{authError}</p><div className="modal-actions"><button className="send" onClick={() => authenticate('login')}>登录</button><button onClick={() => authenticate('register')}>首次使用，创建账号</button></div></>}
-        {dialog === 'settings' && <><span className="label">PROVIDER VAULT</span><h2>供应商设置</h2><label>供应商 ID<input value={settingsProvider} onChange={(event) => setSettingsProvider(event.target.value)} /></label><label>API Key<input type="password" placeholder="只会加密保存，不写入浏览器" value={apiKey} onChange={(event) => setApiKey(event.target.value)} /></label><label>Base URL<input placeholder="例如 https://gateway.company.com/v1" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></label><label>模型列表<input placeholder="model-a, model-b, model-c" value={models} onChange={(event) => setModels(event.target.value)} /></label><div className="modal-actions"><button className="send" onClick={saveProvider}>保存配置</button><button onClick={() => setDialog(null)}>关闭</button></div>{providers.map((item) => <p className="config-row" key={item.id}>{item.id} · {item.configured ? `已配置 ${item.keyFingerprint}` : '未配置'} · {item.models.join(', ')}</p>)}</>}
+        {dialog === 'settings' && <><span className="label">PROVIDER VAULT</span><h2>供应商设置</h2><label>供应商 ID<input value={settingsProvider} onChange={(event) => setSettingsProvider(event.target.value)} /></label><label>API Key<input type="password" placeholder="只会加密保存，不写入浏览器" value={apiKey} onChange={(event) => setApiKey(event.target.value)} /></label><label>Base URL<input placeholder="例如 https://gateway.company.com/v1" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></label><label>模型列表<input placeholder="model-a, model-b, model-c" value={models} onChange={(event) => setModels(event.target.value)} /></label><p className="validation">{validation}</p><div className="modal-actions"><button className="send" onClick={saveProvider}>保存配置</button><button onClick={validateProvider}>验证连接</button><button onClick={() => setDialog(null)}>关闭</button></div>{providers.map((item) => <p className="config-row" key={item.id}>{item.id} · {item.configured ? `已配置 ${item.keyFingerprint}` : '未配置'} · {item.models.join(', ')}</p>)}</>}
         {dialog === 'history' && <><span className="label">INVOCATION LOG</span><h2>调用记录</h2>{history.length ? history.map((item) => <p className="config-row" key={item.id}>{item.providerId} / {item.model} · {item.status} · {item.latencyMs || '-'}ms</p>) : <p>暂无调用记录</p>}<button onClick={() => setDialog(null)}>关闭</button></>}
         {dialog === 'profile' && <><span className="label">SESSION</span><h2>{user?.email}</h2><p>当前会话有效期 24 小时。</p><button onClick={async () => { await api('/api/v1/auth/logout', { method: 'POST' }); setUser(null); setDialog(null) }}>退出登录</button></>}
       </section></div>}

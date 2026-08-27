@@ -221,5 +221,6 @@ footer { display: flex; justify-content: space-between; padding: 28px 0; color: 
 .modal button { border: 0; padding: 11px 14px; background: #e5ece4; color: #17241f; font: 11px 'IBM Plex Mono', monospace; cursor: pointer; }
 .modal .send { background: #e6ff58; }
 .error { min-height: 18px; margin: 10px 0 0; color: #b34d42; font: 11px 'IBM Plex Mono', monospace; }
+.validation { min-height: 18px; margin: 14px 0 0; color: #2c8c68; font: 11px/1.5 'IBM Plex Mono', monospace; }
 .config-row { padding: 12px 0; margin: 0; border-top: 1px solid #d9ded8; color: #63736b; font: 11px/1.5 'IBM Plex Mono', monospace; }
 @media (max-width: 760px) { .shell { padding: 0 20px; } nav button:not(.avatar) { display: none; } .intro { display: block; padding: 56px 0 38px; } .status { margin-top: 30px; } .workspace { grid-template-columns: 1fr; } .panel { padding: 22px; } .response-body { min-height: 220px; } }
