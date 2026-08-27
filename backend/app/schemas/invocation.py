@@ -35,7 +35,7 @@ class InvocationRequest(BaseModel):
     @field_validator("providerId")
     @classmethod
     def validate_provider(cls, value: str) -> str:
-        if value not in {"openai", "anthropic"}:
+        if value not in {"openai", "anthropic"} and not value.startswith("custom-"):
             raise ValueError("不支持的供应商")
         return value
 

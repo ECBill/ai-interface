@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from typing import Optional
 
@@ -24,28 +25,35 @@ def credential_or_none(provider_id: str, user_id: int, db: Session) -> Optional[
 @router.get("", response_model=dict[str, list[ProviderStatus]])
 def list_providers(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, list[ProviderStatus]]:
     items = []
-    for provider_id in sorted(SUPPORTED):
+    provider_ids = set(SUPPORTED)
+    provider_ids.update(row.provider_id for row in db.scalars(select(ProviderCredential).where(ProviderCredential.owner_id == user.id, ProviderCredential.revoked_at.is_(None))))
+    for provider_id in sorted(provider_ids):
         credential = credential_or_none(provider_id, user.id, db)
-        items.append(ProviderStatus(id=provider_id, configured=credential is not None, keyFingerprint=credential.key_fingerprint if credential else None, baseUrl=credential.base_url if credential else DEFAULT_URLS[provider_id]))
+        items.append(ProviderStatus(id=provider_id, configured=credential is not None, keyFingerprint=credential.key_fingerprint if credential else None, baseUrl=credential.base_url if credential else DEFAULT_URLS.get(provider_id), models=json.loads(credential.model_ids) if credential else []))
     return {"items": items}
 
 
 @router.put("/{provider_id}/credentials", response_model=ProviderStatus)
 def save_credentials(provider_id: str, payload: CredentialRequest, user: User = Depends(current_user), db: Session = Depends(get_db)) -> ProviderStatus:
-    if provider_id not in SUPPORTED:
+    if provider_id not in SUPPORTED and not provider_id.startswith("custom-"):
         raise HTTPException(status_code=404, detail="不支持的供应商")
+    api_key = payload.apiKey.strip()
+    if not api_key:
+        raise HTTPException(status_code=422, detail="API Key 不能为空")
     credential = credential_or_none(provider_id, user.id, db)
-    base_url = str(payload.baseUrl).rstrip("/") if payload.baseUrl else DEFAULT_URLS[provider_id]
+    base_url = str(payload.baseUrl).rstrip("/") if payload.baseUrl else DEFAULT_URLS.get(provider_id, "")
+    model_ids = json.dumps(payload.models)
     if credential:
-        credential.encrypted_api_key = encrypt_secret(payload.apiKey)
+        credential.encrypted_api_key = encrypt_secret(api_key)
         credential.base_url = base_url
-        credential.key_fingerprint = fingerprint(payload.apiKey)
+        credential.model_ids = model_ids
+        credential.key_fingerprint = fingerprint(api_key)
         credential.updated_at = datetime.utcnow()
     else:
-        credential = ProviderCredential(owner_id=user.id, provider_id=provider_id, encrypted_api_key=encrypt_secret(payload.apiKey), base_url=base_url, key_fingerprint=fingerprint(payload.apiKey))
+        credential = ProviderCredential(owner_id=user.id, provider_id=provider_id, encrypted_api_key=encrypt_secret(api_key), base_url=base_url, model_ids=model_ids, key_fingerprint=fingerprint(api_key))
         db.add(credential)
     db.commit()
-    return ProviderStatus(id=provider_id, configured=True, keyFingerprint=credential.key_fingerprint, baseUrl=credential.base_url)
+    return ProviderStatus(id=provider_id, configured=True, keyFingerprint=credential.key_fingerprint, baseUrl=credential.base_url, models=json.loads(credential.model_ids))
 
 
 @router.delete("/{provider_id}/credentials", status_code=status.HTTP_204_NO_CONTENT)

@@ -1,7 +1,7 @@
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
@@ -28,3 +28,6 @@ def init_db() -> None:
     if settings.database_url.startswith("sqlite"):
         Path("data").mkdir(exist_ok=True)
     Base.metadata.create_all(bind=engine)
+    if "model_ids" not in {column["name"] for column in inspect(engine).get_columns("provider_credentials")}:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE provider_credentials ADD COLUMN model_ids TEXT DEFAULT '[]'"))

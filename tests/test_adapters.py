@@ -1,7 +1,7 @@
 from app.providers.anthropic import build_payload as build_anthropic
 from app.providers.anthropic import extract_text as extract_anthropic
-from app.providers.openai import build_payload as build_openai
-from app.providers.openai import extract_text as extract_openai
+from app.providers.openai import build_chat_payload, build_payload as build_openai
+from app.providers.openai import extract_chat_text, extract_text as extract_openai
 from app.schemas.invocation import InvocationRequest
 
 
@@ -30,3 +30,13 @@ def test_anthropic_messages_mapping() -> None:
     assert payload["max_tokens"] == 200
     assert payload["stop_sequences"] == ["END"]
     assert extract_anthropic({"content": [{"type": "text", "text": "Hi"}]}) == "Hi"
+
+
+def test_custom_gateway_chat_completions_mapping() -> None:
+    invocation = request().model_copy(update={"providerId": "custom-gateway", "model": "deepseek-v4-flash"})
+    payload = build_chat_payload(invocation)
+    assert payload["model"] == "deepseek-v4-flash"
+    assert payload["messages"][0] == {"role": "system", "content": "Be concise"}
+    assert extract_chat_text({"choices": [{"message": {"content": "Hi"}}]}) == "Hi"
+    assert extract_chat_text({"choices": [{"message": {"content": [{"type": "text", "text": "Hi"}]}}]}) == "Hi"
+    assert extract_chat_text({"choices": [{"message": {"content": "", "reasoning_content": "Thinking"}}]}) == "Thinking"
