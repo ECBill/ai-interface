@@ -1,5 +1,6 @@
 import time
 import json
+import asyncio
 from typing import Any
 
 import httpx
@@ -16,7 +17,7 @@ from app.models.auth import User
 from app.models.invocation import Invocation
 from app.providers.anthropic import build_payload as build_anthropic, extract_text as extract_anthropic
 from app.providers.openai import build_chat_payload, build_payload as build_openai, extract_chat_text, extract_text as extract_openai
-from app.schemas.invocation import InvocationRequest
+from app.schemas.invocation import BatchInvocationRequest, InvocationRequest
 
 router = APIRouter(prefix="/invocations", tags=["invocations"])
 
@@ -34,6 +35,54 @@ def list_invocations(user: User = Depends(current_user), db: Session = Depends(g
 
 def sse(event_type: str, payload: dict[str, Any]) -> str:
     return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+async def invoke_batch_target(target: Any, request: BatchInvocationRequest, user: User, db: Session) -> dict[str, Any]:
+    credential = credential_or_none(target.providerId, user.id, db)
+    if not credential:
+        return {"providerId": target.providerId, "model": target.model, "status": "failed", "error": "PROVIDER_NOT_CONFIGURED"}
+    invocation = Invocation(owner_id=user.id, provider_id=target.providerId, model=target.model, stream=False)
+    db.add(invocation)
+    db.commit()
+    started = time.perf_counter()
+    try:
+        api_key = decrypt_secret(credential.encrypted_api_key).strip()
+        headers = {"Authorization": f"Bearer {api_key}"} if target.providerId != "anthropic" else {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+        single = InvocationRequest(providerId=target.providerId, model=target.model, system=request.system, messages=request.messages, parameters=request.parameters, saveContent=request.saveContent)
+        payload = build_anthropic(single) if target.providerId == "anthropic" else (build_openai(single) if target.providerId == "openai" else build_chat_payload(single))
+        endpoint = f"{credential.base_url}/v1/messages" if target.providerId == "anthropic" else (f"{credential.base_url}/responses" if target.providerId == "openai" else f"{credential.base_url}/chat/completions")
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=10), trust_env=False) as client:
+            response = await client.post(endpoint, headers=headers, json=payload)
+        response.raise_for_status()
+        body = response.json()
+        output = extract_anthropic(body) if target.providerId == "anthropic" else (extract_openai(body) if target.providerId == "openai" else extract_chat_text(body))
+        latency = int((time.perf_counter() - started) * 1000)
+        invocation.status = "succeeded"
+        invocation.output_text = output if request.saveContent else None
+        invocation.latency_ms = latency
+        db.commit()
+        return {"invocationId": invocation.id, "providerId": target.providerId, "model": target.model, "status": "succeeded", "outputText": output, "latencyMs": latency}
+    except httpx.TimeoutException:
+        invocation.status = "failed"
+        invocation.error_code = "PROVIDER_TIMEOUT"
+        db.commit()
+        return {"providerId": target.providerId, "model": target.model, "status": "failed", "error": "PROVIDER_TIMEOUT"}
+    except httpx.HTTPStatusError as exc:
+        invocation.status = "failed"
+        invocation.error_code = "PROVIDER_UNAVAILABLE"
+        db.commit()
+        return {"providerId": target.providerId, "model": target.model, "status": "failed", "error": provider_error(exc.response)}
+    except httpx.RequestError as exc:
+        invocation.status = "failed"
+        invocation.error_code = "PROVIDER_CONNECTION_FAILED"
+        db.commit()
+        return {"providerId": target.providerId, "model": target.model, "status": "failed", "error": f"供应商连接失败: {exc}"}
+
+
+@router.post("/batch")
+async def batch_invoke(request: BatchInvocationRequest, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, list[dict[str, Any]]]:
+    results = await asyncio.gather(*(invoke_batch_target(target, request, user, db) for target in request.targets))
+    return {"items": results}
 
 
 @router.post("")

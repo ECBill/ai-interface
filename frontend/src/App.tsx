@@ -12,6 +12,8 @@ function App() {
   const [reasoning, setReasoning] = useState('')
   const [stream, setStream] = useState(true)
   const [running, setRunning] = useState(false)
+  const [compare, setCompare] = useState(false)
+  const [targets, setTargets] = useState<Array<{ providerId: string; model: string }>>([])
   const [user, setUser] = useState<User | null>(null)
   const [dialog, setDialog] = useState<'login' | 'settings' | 'history' | 'profile' | null>(null)
   const [providers, setProviders] = useState<Provider[]>([])
@@ -49,11 +51,19 @@ function App() {
 
   const sendRequest = async () => {
     if (!message.trim()) return
+    const selectedTargets = compare ? targets : [{ providerId: provider, model }]
+    if (selectedTargets.length < 1) return
+    if (compare && selectedTargets.length < 2) { setResponse('对比模式至少选择两个模型'); return }
     const effectiveStream = stream
     setRunning(true)
     setReasoning('')
     setResponse('')
     try {
+      if (compare) {
+        const result = await api('/api/v1/invocations/batch', { method: 'POST', body: JSON.stringify({ targets: selectedTargets, messages: [{ role: 'user', content: message }] }) })
+        setResponse(result.items.map((item: { providerId: string; model: string; status: string; outputText?: string; latencyMs?: number; error?: string }) => `${item.providerId} / ${item.model} · ${item.status} · ${item.latencyMs || '-'}ms\n${item.outputText || item.error || ''}`).join('\n\n'))
+        return
+      }
       const endpoint = effectiveStream ? '/api/v1/invocations/stream' : '/api/v1/invocations'
       const result = await fetch(endpoint, {
         method: 'POST',
@@ -105,6 +115,8 @@ function App() {
         <div className="panel request-panel">
           <div className="panel-head"><div><span className="label">01 / REQUEST</span><h2>请求配置</h2></div><span className="pill">TEXT ONLY</span></div>
           <div className="field-row"><label>供应商<select value={provider} onChange={(event) => { setProvider(event.target.value); const item = providers.find((candidate) => candidate.id === event.target.value); setModel(item?.models[0] || (event.target.value === 'openai' ? 'gpt-4.1-mini' : 'claude-sonnet-4-5')) }}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option>{providers.filter((item) => !['openai', 'anthropic'].includes(item.id)).map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select></label><label>模型<input value={model} onChange={(event) => setModel(event.target.value)} /></label></div>
+          <label className="compare-toggle"><input type="checkbox" checked={compare} onChange={(event) => { setCompare(event.target.checked); if (event.target.checked && !targets.length) setTargets([{ providerId: provider, model }]) }} />多模型对比</label>
+          {compare && <div className="target-list">{providers.filter((item) => item.configured && item.models.length).flatMap((item) => item.models.map((candidate) => ({ providerId: item.id, model: candidate }))).map((target) => { const checked = targets.some((item) => item.providerId === target.providerId && item.model === target.model); return <label className="target-item" key={`${target.providerId}/${target.model}`}><input type="checkbox" checked={checked} onChange={() => setTargets((current) => checked ? current.filter((item) => !(item.providerId === target.providerId && item.model === target.model)) : [...current, target])} />{target.providerId} / {target.model}</label> })}</div>}
           <label>系统提示词<textarea className="system-input" placeholder="定义模型的角色与回答边界..." /></label>
           <div className="message-box"><span className="role">USER</span><textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder="输入一条消息开始实验..." /></div>
           <div className="controls"><label className="toggle-label"><input type="checkbox" checked={stream} onChange={(event) => setStream(event.target.checked)} /><span className="toggle" />流式响应</label><button className="send" type="button" onClick={sendRequest} disabled={running}>{running ? '处理中...' : '发送请求  →'}</button></div>

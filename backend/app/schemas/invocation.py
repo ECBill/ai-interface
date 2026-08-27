@@ -45,3 +45,30 @@ class InvocationRequest(BaseModel):
         if not any(message.role == "user" for message in value):
             raise ValueError("messages 至少需要一条 user 消息")
         return value
+
+
+class InvocationTarget(BaseModel):
+    providerId: str
+    model: str = Field(min_length=1, max_length=128)
+
+    @field_validator("providerId")
+    @classmethod
+    def validate_target_provider(cls, value: str) -> str:
+        if value not in {"openai", "anthropic"} and not value.startswith("custom-"):
+            raise ValueError("不支持的供应商")
+        return value
+
+
+class BatchInvocationRequest(BaseModel):
+    targets: List[InvocationTarget] = Field(min_length=2, max_length=5)
+    system: Optional[str] = Field(default=None, max_length=20_000)
+    messages: List[Message] = Field(min_length=1, max_length=100)
+    parameters: GenerationParameters = Field(default_factory=GenerationParameters)
+    saveContent: bool = False
+
+    @field_validator("messages")
+    @classmethod
+    def require_batch_user_message(cls, value: List[Message]) -> List[Message]:
+        if not any(message.role == "user" for message in value):
+            raise ValueError("messages 至少需要一条 user 消息")
+        return value

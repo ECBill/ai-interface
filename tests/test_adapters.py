@@ -2,7 +2,7 @@ from app.providers.anthropic import build_payload as build_anthropic
 from app.providers.anthropic import extract_text as extract_anthropic
 from app.providers.openai import build_chat_payload, build_payload as build_openai
 from app.providers.openai import extract_chat_text, extract_text as extract_openai
-from app.schemas.invocation import InvocationRequest
+from app.schemas.invocation import BatchInvocationRequest, InvocationRequest
 
 
 def request() -> InvocationRequest:
@@ -40,3 +40,14 @@ def test_custom_gateway_chat_completions_mapping() -> None:
     assert extract_chat_text({"choices": [{"message": {"content": "Hi"}}]}) == "Hi"
     assert extract_chat_text({"choices": [{"message": {"content": [{"type": "text", "text": "Hi"}]}}]}) == "Hi"
     assert extract_chat_text({"choices": [{"message": {"content": "", "reasoning_content": "Thinking"}}]}) == "Thinking"
+
+
+def test_batch_request_accepts_multiple_custom_targets() -> None:
+    batch = BatchInvocationRequest(
+        targets=[
+            {"providerId": "custom-gateway", "model": "deepseek-v4-flash"},
+            {"providerId": "custom-gateway", "model": "ModelBig/glm-5.3"},
+        ],
+        messages=[{"role": "user", "content": "Hello"}],
+    )
+    assert len(batch.targets) == 2
