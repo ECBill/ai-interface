@@ -227,4 +227,6 @@ footer { display: flex; justify-content: space-between; padding: 28px 0; color: 
 .target-list { display: grid; gap: 8px; margin: -4px 0 20px; padding: 12px; border: 1px solid #d9ded8; background: #f7faf4; }
 .target-item { display: flex; gap: 8px; color: #63736b; line-height: 1.4; }
 .config-row { padding: 12px 0; margin: 0; border-top: 1px solid #d9ded8; color: #63736b; font: 11px/1.5 'IBM Plex Mono', monospace; }
+.history-item { display: block; width: 100%; padding: 12px 0; border: 0; border-top: 1px solid #d9ded8; background: transparent; color: #63736b; text-align: left; font: 11px/1.5 'IBM Plex Mono', monospace; cursor: pointer; }
+.history-output { min-height: 160px; margin: 16px 0; padding: 16px; background: #eef4ec; color: #17241f; white-space: pre-wrap; font: 13px/1.6 'IBM Plex Mono', monospace; }
 @media (max-width: 760px) { .shell { padding: 0 20px; } nav button:not(.avatar) { display: none; } .intro { display: block; padding: 56px 0 38px; } .status { margin-top: 30px; } .workspace { grid-template-columns: 1fr; } .panel { padding: 22px; } .response-body { min-height: 220px; } }

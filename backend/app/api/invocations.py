@@ -33,6 +33,23 @@ def list_invocations(user: User = Depends(current_user), db: Session = Depends(g
     return {"items": [{"id": row.id, "providerId": row.provider_id, "model": row.model, "status": row.status, "latencyMs": row.latency_ms, "createdAt": row.created_at.isoformat()} for row in records]}
 
 
+@router.get("/{invocation_id}")
+def get_invocation(invocation_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    record = db.scalar(select(Invocation).where(Invocation.id == invocation_id, Invocation.owner_id == user.id))
+    if not record:
+        raise HTTPException(status_code=404, detail="调用记录不存在")
+    return {"id": record.id, "providerId": record.provider_id, "model": record.model, "status": record.status, "stream": record.stream, "outputText": record.output_text, "errorCode": record.error_code, "latencyMs": record.latency_ms, "createdAt": record.created_at.isoformat(), "completedAt": record.completed_at.isoformat() if record.completed_at else None}
+
+
+@router.delete("/{invocation_id}", status_code=204)
+def delete_invocation(invocation_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)) -> None:
+    record = db.scalar(select(Invocation).where(Invocation.id == invocation_id, Invocation.owner_id == user.id))
+    if not record:
+        raise HTTPException(status_code=404, detail="调用记录不存在")
+    db.delete(record)
+    db.commit()
+
+
 def sse(event_type: str, payload: dict[str, Any]) -> str:
     return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
