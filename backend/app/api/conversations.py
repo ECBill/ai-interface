@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -65,15 +65,22 @@ def sse_error(code: str, message: str) -> str:
 
 
 @router.get("")
-def list_conversations(limit: int = 50, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
-    rows = db.scalars(
+def list_conversations(limit: int = 50, cursor: Optional[str] = None, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    page_size = min(max(limit, 1), 100)
+    query = (
         select(Conversation)
         .where(Conversation.owner_id == user.id, Conversation.deleted_at.is_(None))
         .order_by(Conversation.last_message_at.desc())
-        .limit(min(max(limit, 1), 100))
-    ).all()
+    )
+    if cursor:
+        query = query.where(Conversation.last_message_at < cursor)
+    query = query.limit(page_size + 1)
+    rows = list(db.scalars(query).all())
+    has_more = len(rows) > page_size
+    rows = rows[:page_size]
     items = [serialize_conversation_summary(row).model_dump(mode="json") for row in rows]
-    return {"items": items, "nextCursor": None}
+    next_cursor = rows[-1].last_message_at.isoformat() if has_more and rows else None
+    return {"items": items, "nextCursor": next_cursor}
 
 
 @router.post("", status_code=201)
@@ -104,6 +111,15 @@ def patch_conversation(conversation_id: str, payload: ConversationSettings, user
 def delete_conversation(conversation_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)) -> None:
     conversation = load_conversation(conversation_id, user, db)
     conversation.deleted_at = datetime.utcnow()
+    # Soft-delete all child messages
+    child_messages = db.scalars(
+        select(ChatMessage).where(
+            ChatMessage.conversation_id == conversation.id,
+            ChatMessage.superseded_by.is_(None),
+        )
+    ).all()
+    for msg in child_messages:
+        msg.superseded_by = "deleted"
     db.commit()
 
 
@@ -167,11 +183,12 @@ async def _generate_stream(
     model: str,
     credential,
     warnings: list,
+    request: Optional[Request] = None,
 ):
     """执行上游流式调用，产生 V3 事件并节流落库。"""
     api_key = decrypt_secret(credential.encrypted_api_key).strip()
     headers = {"Authorization": f"Bearer {api_key}"} if provider_id != "anthropic" else {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
-    request = InvocationRequest(
+    inv_request = InvocationRequest(
         providerId=provider_id,
         model=model,
         system=system,
@@ -179,7 +196,7 @@ async def _generate_stream(
         parameters=parameters,
         stream=True,
     )
-    payload = build_anthropic(request) if provider_id == "anthropic" else (build_openai(request) if provider_id == "openai" else build_chat_payload(request))
+    payload = build_anthropic(inv_request) if provider_id == "anthropic" else (build_openai(inv_request) if provider_id == "openai" else build_chat_payload(inv_request))
     endpoint = f"{credential.base_url}/v1/messages" if provider_id == "anthropic" else (f"{credential.base_url}/responses" if provider_id == "openai" else f"{credential.base_url}/chat/completions")
 
     started = time.perf_counter()
@@ -207,6 +224,16 @@ async def _generate_stream(
                     yield sse_error(assistant.error_code, f"供应商返回 HTTP {upstream.status_code}: {detail or '无错误详情'}")
                     return
                 async for line in upstream.aiter_lines():
+                    if request and await request.is_disconnected():
+                        assistant.content = answer
+                        assistant.thinking = thinking or None
+                        assistant.status = "cancelled"
+                        assistant.finish_reason = "cancelled"
+                        assistant.latency_ms = int((time.perf_counter() - started) * 1000)
+                        invocation.status = "cancelled"
+                        invocation.completed_at = datetime.utcnow()
+                        db.commit()
+                        return
                     if not line.startswith("data: "):
                         continue
                     raw = line[6:]
@@ -314,6 +341,7 @@ async def _run_and_generate(
     provider_id: str,
     model: str,
     warnings: list,
+    request: Optional[Request] = None,
 ):
     credential = credential_or_none(provider_id, user.id, db)
     if not credential:
@@ -337,12 +365,12 @@ async def _run_and_generate(
     db.add(assistant)
     db.commit()
     db.refresh(assistant)
-    async for event in _generate_stream(db, conversation, assistant, invocation, context_messages, system, parameters, provider_id, model, credential, warnings):
+    async for event in _generate_stream(db, conversation, assistant, invocation, context_messages, system, parameters, provider_id, model, credential, warnings, request):
         yield event
 
 
 @router.post("/{conversation_id}/messages")
-async def send_message(conversation_id: str, payload: SendMessageRequest, user: User = Depends(current_user), db: Session = Depends(get_db)) -> StreamingResponse:
+async def send_message(conversation_id: str, payload: SendMessageRequest, request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)) -> StreamingResponse:
     conversation = load_conversation(conversation_id, user, db)
     preference = preference_or_create(user.id, db)
     provider_id, model, system, parameters = _resolve_generation_settings(conversation, payload.providerId, payload.model, payload.system, payload.parameters, preference, db)
@@ -363,14 +391,14 @@ async def send_message(conversation_id: str, payload: SendMessageRequest, user: 
         if not payload.stream:
             yield sse_error("STREAM_REQUIRED", "请使用流式模式发送消息")
             return
-        async for event in _run_and_generate(db, user, conversation, context_messages, system, parameters, provider_id, model, warnings):
+        async for event in _run_and_generate(db, user, conversation, context_messages, system, parameters, provider_id, model, warnings, request):
             yield event
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.post("/{conversation_id}/messages/{message_id}/regenerate")
-async def regenerate_message(conversation_id: str, message_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)) -> StreamingResponse:
+async def regenerate_message(conversation_id: str, message_id: str, request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)) -> StreamingResponse:
     conversation = load_conversation(conversation_id, user, db)
     preference = preference_or_create(user.id, db)
     target = db.scalar(select(ChatMessage).where(ChatMessage.id == message_id, ChatMessage.conversation_id == conversation.id))
@@ -387,7 +415,7 @@ async def regenerate_message(conversation_id: str, message_id: str, user: User =
     context_messages, warnings = service.build_context(db, conversation)
 
     async def events():
-        async for event in _run_and_generate(db, user, conversation, context_messages, system, parameters, provider_id, model, warnings):
+        async for event in _run_and_generate(db, user, conversation, context_messages, system, parameters, provider_id, model, warnings, request):
             yield event
         target.superseded_by = "regenerated"
         db.commit()
@@ -396,7 +424,7 @@ async def regenerate_message(conversation_id: str, message_id: str, user: User =
 
 
 @router.put("/{conversation_id}/messages/{message_id}")
-async def edit_message(conversation_id: str, message_id: str, payload: MessageEditRequest, user: User = Depends(current_user), db: Session = Depends(get_db)) -> StreamingResponse:
+async def edit_message(conversation_id: str, message_id: str, payload: MessageEditRequest, request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)) -> StreamingResponse:
     conversation = load_conversation(conversation_id, user, db)
     preference = preference_or_create(user.id, db)
     target = db.scalar(select(ChatMessage).where(ChatMessage.id == message_id, ChatMessage.conversation_id == conversation.id))
@@ -414,7 +442,7 @@ async def edit_message(conversation_id: str, message_id: str, payload: MessageEd
     context_messages, warnings = service.build_context(db, conversation)
 
     async def events():
-        async for event in _run_and_generate(db, user, conversation, context_messages, system, parameters, provider_id, model, warnings):
+        async for event in _run_and_generate(db, user, conversation, context_messages, system, parameters, provider_id, model, warnings, request):
             yield event
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -6,6 +7,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 class Credentials(BaseModel):
     email: EmailStr
     password: str = Field(min_length=12, max_length=128)
+    rememberMe: bool = True
 
     @field_validator("password")
     @classmethod
@@ -18,4 +20,5 @@ class Credentials(BaseModel):
 class UserResponse(BaseModel):
     id: int
     email: EmailStr
-    created_at: datetime
+    createdAt: datetime
+    expiresAt: Optional[str] = None

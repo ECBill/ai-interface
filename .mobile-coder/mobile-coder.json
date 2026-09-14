@@ -1,0 +1,17 @@
+{
+  "$schema": "https://placeholder.mobile-coder/config.json",
+  "safety": {
+    "bash": {
+      "whitelist": [
+        "sleep",
+        "echo",
+        "curl",
+        "python -c",
+        "pkill",
+        "ss",
+        "grep"
+      ]
+    },
+    "allowExternalDirectory": true
+  }
+}
